@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  ldap:
+    image: osixia/openldap:latest
+    container_name: fastapi-ldap-openldap
+    environment:
+      LDAP_ORGANISATION: "Example Inc"
+      LDAP_DOMAIN: "example.com"
+      LDAP_BASE_DN: "dc=example,dc=com"
+      LDAP_ADMIN_PASSWORD: "admin"
+      LDAP_CONFIG_PASSWORD: "config"
+      LDAP_READONLY_USER: "false"
+      LDAP_RFC2307BIS_SCHEMA: "false"
+      LDAP_BACKEND: "mdb"
+      LDAP_TLS: "true"
+      LDAP_TLS_CRT_FILENAME: "ldap.crt"
+      LDAP_TLS_KEY_FILENAME: "ldap.key"
+      LDAP_TLS_DH_PARAM_FILENAME: "dhparam.pem"
+      LDAP_TLS_CA_CRT_FILENAME: "ca.crt"
+      LDAP_TLS_ENFORCE: "false"
+      LDAP_TLS_CIPHER_SUITE: "SECURE256:-VERS-SSL3.0"
+      LDAP_TLS_PROTOCOL_MIN: "3.1"
+      LDAP_TLS_VERIFY_CLIENT: "demand"
+      LDAP_REPLICATION: "false"
+      KEEP_EXISTING_CONFIG: "false"
+      LDAP_REMOVE_CONFIG_AFTER_SETUP: "true"
+      LDAP_SSL_HELPER_PREFIX: "ldap"
+    ports:
+      - "389:389"   # LDAP
+      - "636:636"   # LDAPS
+    volumes:
+      - ldap_data:/var/lib/ldap
+      - ldap_config:/etc/ldap/slapd.d
+    command: --copy-service --loglevel debug
+    healthcheck:
+      test: ["CMD", "ldapsearch", "-x", "-H", "ldap://localhost:389", "-b", "dc=example,dc=com", "-D", "cn=admin,dc=example,dc=com", "-w", "admin"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ldap-admin:
+    image: osixia/phpldapadmin:latest
+    container_name: fastapi-ldap-phpldapadmin
+    environment:
+      PHPLDAPADMIN_LDAP_HOSTS: "ldap"
+      PHPLDAPADMIN_HTTPS: "false"
+    ports:
+      - "8080:80"
+    depends_on:
+      - ldap
+
+volumes:
+  ldap_data:
+  ldap_config:
+
