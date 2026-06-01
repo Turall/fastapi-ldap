@@ -26,17 +26,26 @@ class TestLDAPSettings:
         assert settings.pool_size == 10
         assert settings.cache_enabled is False
 
-    def test_anonymous_bind(self):
+    def test_anonymous_bind(self, monkeypatch):
+        monkeypatch.delenv("LDAP_BIND_DN", raising=False)
+        monkeypatch.delenv("LDAP_BIND_PASSWORD", raising=False)
+
         settings = LDAPSettings(
             ldap_url="ldaps://ldap.example.com:636",
             ldap_base_dn="dc=example,dc=com",
             allow_anonymous=True,
+            bind_dn=None,
+            bind_password=None,
+            _env_file="",
         )
         assert settings.allow_anonymous is True
         assert settings.bind_dn is None
         assert settings.bind_password is None
 
-    def test_require_bind_credentials(self):
+    def test_require_bind_credentials(self, monkeypatch):
+        monkeypatch.delenv("LDAP_BIND_DN", raising=False)
+        monkeypatch.delenv("LDAP_BIND_PASSWORD", raising=False)
+
         with pytest.raises(ValueError, match="bind_dn and bind_password are required"):
             LDAPSettings(
                 ldap_url="ldaps://ldap.example.com:636",
@@ -44,6 +53,7 @@ class TestLDAPSettings:
                 allow_anonymous=False,
                 bind_dn=None,
                 bind_password=None,
+                _env_file="",
             )
 
     def test_ldaps_url(self):

@@ -10,6 +10,7 @@ from ldap3 import (
     Tls,
 )
 from ldap3.core.exceptions import LDAPException, LDAPSocketOpenError  # type: ignore[import-untyped]
+from ldap3.utils.conv import escape_filter_chars  # type: ignore[import-untyped]
 
 from fastapi_ldap.config import LDAPSettings
 from fastapi_ldap.exceptions import (
@@ -18,6 +19,15 @@ from fastapi_ldap.exceptions import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_username(username: str) -> str:
+    """Strip UPN or NetBIOS prefix for sAMAccountName-style searches."""
+    if "@" in username:
+        return username.split("@", 1)[0]
+    if "\\" in username:
+        return username.split("\\", 1)[-1]
+    return username
 
 
 class LDAPClient:
@@ -248,12 +258,14 @@ class LDAPClient:
         if not username or not password:
             return None
 
+        sam = _normalize_username(username)
+
         try:
             async with self.connection() as conn:
                 loop = asyncio.get_event_loop()
 
                 search_filter = self.settings.user_search_filter.format(
-                    username=username
+                    username=escape_filter_chars(sam)
                 )
                 search_base = self.settings.user_search_base or self.settings.ldap_base_dn
 
@@ -287,7 +299,7 @@ class LDAPClient:
                     }
 
                 except LDAPException:
-                    logger.debug(f"Authentication failed for user: {username}")
+                    logger.info(f"Authentication failed for user: {username}")
                     return None
 
         except Exception as e:
@@ -309,10 +321,11 @@ class LDAPClient:
                     if not username:
                         username = user_dn.split(",")[0].split("=")[-1]
 
-                # Format search filter with both user_dn and username
+                group_username = _normalize_username(username) if username else username
+
                 search_filter = self.settings.group_search_filter.format(
-                    user_dn=user_dn,
-                    username=username
+                    user_dn=escape_filter_chars(user_dn),
+                    username=escape_filter_chars(group_username),
                 )
                 search_base = (
                     self.settings.group_search_base or self.settings.ldap_base_dn

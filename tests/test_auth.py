@@ -1,3 +1,4 @@
+import logging
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -166,6 +167,26 @@ class TestGetCurrentUser:
                 await get_current_user(credentials)
 
             assert exc_info.value.status_code == status.HTTP_401_UNAUTHORIZED
+
+    @pytest.mark.asyncio
+    async def test_get_current_user_401_not_logged_as_unexpected(
+        self, ldap_settings, caplog
+    ):
+        credentials = HTTPBasicCredentials(username="testuser", password="wrongpass")
+
+        mock_client = AsyncMock(spec=LDAPClient)
+        mock_client.authenticate = AsyncMock(return_value=None)
+
+        caplog.set_level(logging.ERROR)
+
+        with patch("fastapi_ldap.auth._client", mock_client), patch(
+            "fastapi_ldap.auth._cache", None
+        ), patch("fastapi_ldap.auth._settings", ldap_settings):
+            with pytest.raises(HTTPException) as exc_info:
+                await get_current_user(credentials)
+
+            assert exc_info.value.status_code == status.HTTP_401_UNAUTHORIZED
+            assert "Unexpected authentication error" not in caplog.text
 
     @pytest.mark.asyncio
     async def test_get_current_user_client_not_initialized(self, ldap_settings):

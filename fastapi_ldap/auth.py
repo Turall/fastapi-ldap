@@ -188,6 +188,8 @@ async def get_current_user(
 
         return user
 
+    except HTTPException:
+        raise
     except LDAPConnectionError as e:
         logger.error("LDAP connection error", exc_info=True)
         raise HTTPException(

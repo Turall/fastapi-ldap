@@ -5,7 +5,7 @@ import pytest
 from ldap3 import Connection, Server
 from ldap3.core.exceptions import LDAPException, LDAPSocketOpenError
 
-from fastapi_ldap.client import LDAPClient
+from fastapi_ldap.client import LDAPClient, _normalize_username
 from fastapi_ldap.config import LDAPSettings
 from fastapi_ldap.exceptions import LDAPConnectionError, LDAPError
 
@@ -182,6 +182,68 @@ class TestLDAPClient:
 
         result = await client.authenticate("", "pass")
         assert result is None
+
+    def test_normalize_username(self):
+        assert _normalize_username("jsmith@example.com") == "jsmith"
+        assert _normalize_username("EXAMPLE\\jsmith") == "jsmith"
+        assert _normalize_username("jsmith") == "jsmith"
+
+    @pytest.mark.asyncio
+    async def test_authenticate_normalizes_upn_for_search(self, ldap_settings):
+        ldap_settings.user_search_filter = "(sAMAccountName={username})"
+        client = LDAPClient(ldap_settings)
+        mock_conn = Mock(spec=Connection)
+        mock_conn.bound = True
+        mock_conn.closed = False
+        mock_conn.entries = []
+        mock_conn.search = Mock(return_value=True)
+
+        with patch.object(client, "connection") as mock_ctx:
+            mock_ctx.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+            mock_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            await client.authenticate("jsmith@example.com", "password")
+
+            search_filter = mock_conn.search.call_args[0][1]
+            assert search_filter == "(sAMAccountName=jsmith)"
+
+    @pytest.mark.asyncio
+    async def test_authenticate_normalizes_netbios_for_search(self, ldap_settings):
+        ldap_settings.user_search_filter = "(sAMAccountName={username})"
+        client = LDAPClient(ldap_settings)
+        mock_conn = Mock(spec=Connection)
+        mock_conn.bound = True
+        mock_conn.closed = False
+        mock_conn.entries = []
+        mock_conn.search = Mock(return_value=True)
+
+        with patch.object(client, "connection") as mock_ctx:
+            mock_ctx.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+            mock_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            await client.authenticate("EXAMPLE\\jsmith", "password")
+
+            search_filter = mock_conn.search.call_args[0][1]
+            assert search_filter == "(sAMAccountName=jsmith)"
+
+    @pytest.mark.asyncio
+    async def test_authenticate_escapes_filter_special_chars(self, ldap_settings):
+        ldap_settings.user_search_filter = "(sAMAccountName={username})"
+        client = LDAPClient(ldap_settings)
+        mock_conn = Mock(spec=Connection)
+        mock_conn.bound = True
+        mock_conn.closed = False
+        mock_conn.entries = []
+        mock_conn.search = Mock(return_value=True)
+
+        with patch.object(client, "connection") as mock_ctx:
+            mock_ctx.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+            mock_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            await client.authenticate("user*@example.com", "password")
+
+            search_filter = mock_conn.search.call_args[0][1]
+            assert search_filter == "(sAMAccountName=user\\2a)"
 
     @pytest.mark.asyncio
     async def test_get_user_groups_success(self, ldap_settings):
