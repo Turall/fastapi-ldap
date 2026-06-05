@@ -6,7 +6,7 @@ from fastapi import Depends, HTTPException, Security, status
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from fastapi_ldap.cache import AuthCache
-from fastapi_ldap.client import LDAPClient
+from fastapi_ldap.client import LDAPClient, _normalize_ldap_attribute
 from fastapi_ldap.config import LDAPSettings
 from fastapi_ldap.exceptions import (
     LDAPConnectionError,
@@ -102,7 +102,7 @@ class LDAPAuth:
             display_name=user_attrs.get("displayName") or user_attrs.get("cn"),
             groups=frozenset(groups),
             attributes={
-                k: v[0] if isinstance(v, list) and v else str(v)
+                k: _normalize_ldap_attribute(v)
                 for k, v in user_attrs.items()
                 if k not in ["dn", "uid", "sAMAccountName", "mail", "email", "displayName", "cn"]
             },
@@ -177,7 +177,7 @@ async def get_current_user(
             display_name=user_attrs.get("displayName") or user_attrs.get("cn"),
             groups=frozenset(groups),
             attributes={
-                k: v[0] if isinstance(v, list) and v else str(v)
+                k: _normalize_ldap_attribute(v)
                 for k, v in user_attrs.items()
                 if k not in ["dn", "uid", "sAMAccountName", "mail", "email", "displayName", "cn"]
             },

@@ -5,7 +5,11 @@ import pytest
 from ldap3 import Connection, Server
 from ldap3.core.exceptions import LDAPException, LDAPSocketOpenError
 
-from fastapi_ldap.client import LDAPClient, _normalize_username
+from fastapi_ldap.client import (
+    LDAPClient,
+    _normalize_ldap_attribute,
+    _normalize_username,
+)
 from fastapi_ldap.config import LDAPSettings
 from fastapi_ldap.exceptions import LDAPConnectionError, LDAPError
 
@@ -131,6 +135,44 @@ class TestLDAPClient:
             assert result is not None
             assert result["dn"] == "cn=testuser,dc=example,dc=com"
             assert result["uid"] == "testuser"
+
+    def test_normalize_ldap_attribute(self):
+        assert _normalize_ldap_attribute(["only"]) == "only"
+        assert _normalize_ldap_attribute([]) == ""
+        assert _normalize_ldap_attribute(["a", "b"]) == ["a", "b"]
+        assert _normalize_ldap_attribute("plain") == "plain"
+
+    @pytest.mark.asyncio
+    async def test_authenticate_preserves_multivalue_memberof(self, ldap_settings):
+        client = LDAPClient(ldap_settings)
+        mock_conn = Mock(spec=Connection)
+        mock_conn.bound = True
+        mock_conn.closed = False
+
+        mock_entry = Mock()
+        mock_entry.entry_dn = "cn=testuser,dc=example,dc=com"
+        mock_entry.entry_attributes_as_dict = {
+            "uid": ["testuser"],
+            "memberOf": [
+                "CN=Group A,DC=example,DC=com",
+                "CN=Group B,DC=example,DC=com",
+            ],
+        }
+        mock_conn.entries = [mock_entry]
+        mock_conn.search = Mock(return_value=True)
+        mock_conn.rebind = Mock(return_value=True)
+
+        with patch.object(client, "connection") as mock_ctx:
+            mock_ctx.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+            mock_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            result = await client.authenticate("testuser", "password")
+
+            assert result is not None
+            assert result["memberOf"] == [
+                "CN=Group A,DC=example,DC=com",
+                "CN=Group B,DC=example,DC=com",
+            ]
 
     @pytest.mark.asyncio
     async def test_authenticate_user_not_found(self, ldap_settings):

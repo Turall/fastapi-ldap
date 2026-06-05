@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import FrozenSet, Optional
+from typing import FrozenSet, Optional, Union
 
 
 @dataclass(frozen=True)
@@ -16,7 +16,7 @@ class LDAPUser:
         default_factory=frozenset,
         metadata={"description": "Set of group names the user belongs to"},
     )
-    attributes: dict[str, str] = field(
+    attributes: dict[str, Union[str, list[str]]] = field(
         default_factory=dict,
         metadata={"description": "Additional LDAP attributes"},
     )

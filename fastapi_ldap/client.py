@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager, suppress
-from typing import AsyncIterator, Optional
+from typing import AsyncIterator, Optional, Union
 
 from ldap3 import (
     ALL,
@@ -28,6 +28,18 @@ def _normalize_username(username: str) -> str:
     if "\\" in username:
         return username.split("\\", 1)[-1]
     return username
+
+
+def _normalize_ldap_attribute(value: object) -> Union[str, list[str]]:
+    """Convert ldap3 attribute values: unwrap single-item lists, keep multi-valued."""
+    if isinstance(value, list):
+        if not value:
+            return ""
+        normalized = [str(v) for v in value]
+        if len(normalized) == 1:
+            return normalized[0]
+        return normalized
+    return str(value)
 
 
 class LDAPClient:
@@ -254,7 +266,7 @@ class LDAPClient:
 
     async def authenticate(
         self, username: str, password: str
-    ) -> Optional[dict[str, str]]:
+    ) -> Optional[dict[str, Union[str, list[str]]]]:
         if not username or not password:
             return None
 
@@ -295,7 +307,10 @@ class LDAPClient:
                     logger.info(f"User authenticated successfully: {username}")
                     return {
                         "dn": user_dn,
-                        **{k: v[0] if isinstance(v, list) and v else v for k, v in user_attrs.items()},
+                        **{
+                            k: _normalize_ldap_attribute(v)
+                            for k, v in user_attrs.items()
+                        },
                     }
 
                 except LDAPException:
