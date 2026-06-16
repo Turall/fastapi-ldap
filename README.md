@@ -101,6 +101,7 @@ settings = LDAPSettings(
     # Connection pool
     pool_size=10,
     pool_timeout=30.0,
+    pool_max_idle_seconds=1800.0,  # Discard idle connections after 30 min (AD/LDAP stale fix)
     
     # Caching (optional)
     cache_enabled=True,
@@ -119,6 +120,7 @@ export LDAP_BIND_DN="cn=admin,dc=example,dc=com"
 export LDAP_BIND_PASSWORD="secret"
 export LDAP_CACHE_ENABLED="true"
 export LDAP_CACHE_TTL="300"
+export LDAP_POOL_MAX_IDLE_SECONDS="1800"
 ```
 
 **Important: Passwords with Special Characters**
@@ -140,18 +142,45 @@ export LDAP_BIND_PASSWORD=pass$word
 
 ## Active Directory Example
 
+`bind_dn` / `bind_password` are for a **service account** (connection pool and LDAP searches). End users authenticate with their own username and password via HTTP Basic Auth on protected routes — do not use the service password for user login.
+
 ```python
 settings = LDAPSettings(
     ldap_url="ldaps://ad.example.com:636",
     ldap_base_dn="dc=example,dc=com",
-    bind_dn="CN=Service Account,CN=Users,DC=example,DC=com",
-    bind_password="password",
+    # Service account (UPN format recommended)
+    bind_dn="ldap-service@example.com",
+    bind_password="service-account-password",
     user_search_filter="(sAMAccountName={username})",
-    user_search_base="CN=Users,DC=example,DC=com",
+    user_search_base="DC=example,DC=com",  # Use domain root unless you intentionally restrict OUs
     group_search_filter="(member:1.2.840.113556.1.4.1941:={user_dn})",  # Recursive group search
     group_attribute="cn",
+    pool_max_idle_seconds=900,  # Refresh idle connections; AD often drops them after ~15 min
 )
 ```
+
+HTTP Basic login accepts plain username, UPN (`user@example.com`), or NetBIOS (`DOMAIN\user`) — the client normalizes these for `sAMAccountName` search.
+
+## Connection Pool and Long-Running Services
+
+LDAP and Active Directory often close idle TCP connections. Without refresh, a backend that runs for hours may start returning `401 Invalid credentials` for valid users until restart.
+
+`fastapi-ldap` mitigates this by:
+
+- Rebinding to the service account on every pool checkout and return
+- Discarding connections idle longer than `pool_max_idle_seconds` (default **1800** / 30 minutes)
+- Replacing dead connections and retrying authentication once on connection errors
+
+For AD deployments with short idle timeouts, lower the idle limit:
+
+```python
+LDAPSettings(
+    ...
+    pool_max_idle_seconds=900,  # 15 minutes
+)
+```
+
+Set `pool_max_idle_seconds=0` to disable age-based discard (not recommended for production AD).
 
 ## API Reference
 
@@ -168,8 +197,8 @@ settings = LDAPSettings(
   - `username` - Username
   - `email` - Email address (optional)
   - `display_name` - Display name (optional)
-  - `groups` - Frozen set of group names
-  - `attributes` - Additional LDAP attributes
+  - `groups` - Frozen set of group names (from group search)
+  - `attributes` - Additional LDAP attributes (`str` or `list[str]` for multi-valued fields such as AD `memberOf`)
   - `has_group(group)` - Check if user belongs to a group
   - `has_any_group(groups)` - Check if user belongs to any group
   - `has_all_groups(groups)` - Check if user belongs to all groups
@@ -183,9 +212,11 @@ settings = LDAPSettings(
 
 - **TLS is enabled by default** - Disable only for testing in secure environments
 - **Anonymous binds are disabled by default** - Must be explicitly enabled
+- **Use a dedicated service account** for `bind_dn` with least-privilege read access; never use Domain Admin
 - **Authentication failures are indistinguishable** - Prevents user enumeration
 - **No credential logging** - Passwords are never logged
-- **Fail-closed behavior** - If LDAP is unavailable, authentication fails securely
+- **Fail-closed behavior** - If LDAP is unavailable, authentication fails securely (503 for infra errors, 401 for bad credentials)
+
 
 ## Architecture
 

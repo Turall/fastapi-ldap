@@ -1,4 +1,5 @@
 import asyncio
+import time
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
@@ -32,10 +33,8 @@ class TestLDAPClient:
         with patch("fastapi_ldap.client.Server") as mock_server_class, patch(
             "fastapi_ldap.client.Tls"
         ) as mock_tls_class, patch.object(
-            client, "_create_connection", new_callable=AsyncMock
-        ) as mock_create, patch.object(
-            client, "_bind_connection", new_callable=AsyncMock
-        ) as mock_bind:
+            client, "_create_and_bind_connection", new_callable=AsyncMock
+        ) as mock_create:
             mock_server = Mock(spec=Server)
             mock_server_class.return_value = mock_server
 
@@ -47,8 +46,7 @@ class TestLDAPClient:
             await client.initialize()
 
             assert client._server is not None
-            mock_create.assert_called()
-            mock_bind.assert_called()
+            assert mock_create.call_count == min(2, ldap_settings.pool_size)
 
     @pytest.mark.asyncio
     async def test_initialize_failure(self, ldap_settings):
@@ -78,28 +76,28 @@ class TestLDAPClient:
     @pytest.mark.asyncio
     async def test_connection_context_manager(self, ldap_settings):
         client = LDAPClient(ldap_settings)
+        client._server = Mock(spec=Server)
+        client._lock = asyncio.Lock()
         mock_conn = Mock(spec=Connection)
         mock_conn.bound = True
         mock_conn.closed = False
+        mock_conn._pool_idle_since = time.time()
 
-        await client._pool.put(mock_conn)
-        client._pool_size = 1
+        with patch.object(client, "_bind_connection", new_callable=AsyncMock):
+            await client._pool.put(mock_conn)
+            client._pool_size = 1
 
-        async with client.connection() as conn:
-            assert conn == mock_conn
+            async with client.connection() as conn:
+                assert conn == mock_conn
 
-        assert not client._pool.empty()
+            assert not client._pool.empty()
 
     @pytest.mark.asyncio
     async def test_connection_pool_exhausted(self, ldap_settings):
         ldap_settings.pool_size = 1
-        ldap_settings.pool_timeout = 0.1
         client = LDAPClient(ldap_settings)
         client._server = Mock(spec=Server)
-
-        mock_conn = Mock(spec=Connection)
-        mock_conn.bound = True
-        await client._pool.put(mock_conn)
+        client._lock = asyncio.Lock()
         client._pool_size = 1
 
         empty_queue = asyncio.Queue(maxsize=1)
@@ -430,10 +428,8 @@ class TestLDAPClient:
         with patch("fastapi_ldap.client.Server") as mock_server_class, patch(
             "fastapi_ldap.client.Tls"
         ) as mock_tls_class, patch.object(
-            client, "_create_connection", new_callable=AsyncMock
-        ) as mock_create, patch.object(
-            client, "_bind_connection", new_callable=AsyncMock
-        ) as mock_bind:
+            client, "_create_and_bind_connection", new_callable=AsyncMock
+        ) as mock_create:
             mock_server = Mock(spec=Server)
             mock_server_class.return_value = mock_server
             mock_tls = Mock()
@@ -478,25 +474,27 @@ class TestLDAPClient:
     async def test_connection_pool_timeout_creates_new(self, ldap_settings):
         client = LDAPClient(ldap_settings)
         client._server = Mock(spec=Server)
-        
         client._lock = asyncio.Lock()
         client._pool = asyncio.Queue()
         client._pool_size = 0
-        
-        ldap_settings.pool_timeout = 0.01
 
-        with patch.object(client, "_create_connection", new_callable=AsyncMock) as mock_create, patch.object(
+        mock_new_conn = Mock(spec=Connection)
+        mock_new_conn.bound = True
+        mock_new_conn.closed = False
+
+        with patch.object(
+            client,
+            "_create_and_bind_connection",
+            new_callable=AsyncMock,
+            return_value=mock_new_conn,
+        ) as mock_create, patch.object(
             client, "_bind_connection", new_callable=AsyncMock
         ) as mock_bind:
-            mock_new_conn = Mock(spec=Connection)
-            mock_new_conn.bound = False
-            mock_new_conn.closed = False
-            mock_create.return_value = mock_new_conn
-
             async with client.connection() as conn:
-                assert conn is not None
-                mock_create.assert_called_once()
-                mock_bind.assert_called_once()
+                assert conn is mock_new_conn
+
+            mock_create.assert_called_once()
+            mock_bind.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_connection_rebind_error_handling(self, ldap_settings):
@@ -504,38 +502,94 @@ class TestLDAPClient:
         client._server = Mock(spec=Server)
         client._lock = asyncio.Lock()
         client._pool = asyncio.Queue()
-        
+
         mock_conn = Mock(spec=Connection)
         mock_conn.bound = True
         mock_conn.closed = False
-        mock_conn.rebind = Mock(side_effect=Exception("Rebind failed"))
+        mock_conn._pool_idle_since = time.time()
         await client._pool.put(mock_conn)
         client._pool_size = 1
 
-        async with client.connection() as conn:
-            assert conn == mock_conn
+        with patch.object(client, "_bind_connection", new_callable=AsyncMock) as mock_bind, patch.object(
+            client, "_create_and_bind_connection", new_callable=AsyncMock
+        ) as mock_create:
+            mock_bind.side_effect = [None, LDAPConnectionError("rebind failed")]
+            replacement = Mock(spec=Connection)
+            replacement.bound = True
+            replacement.closed = False
+            mock_create.return_value = replacement
+
+            async with client.connection() as conn:
+                assert conn is mock_conn
+
+            mock_create.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_connection_unbound_returns_replacement(self, ldap_settings):
+    async def test_connection_checkout_always_rebinds(self, ldap_settings):
         client = LDAPClient(ldap_settings)
         client._server = Mock(spec=Server)
         client._lock = asyncio.Lock()
         client._pool = asyncio.Queue()
-        
+
         mock_conn = Mock(spec=Connection)
-        mock_conn.bound = False
-        mock_conn.closed = True
+        mock_conn.bound = True
+        mock_conn.closed = False
+        mock_conn._pool_idle_since = time.time()
         await client._pool.put(mock_conn)
         client._pool_size = 1
 
-        with patch.object(client, "_create_connection", new_callable=AsyncMock) as mock_create:
-            mock_new_conn = Mock(spec=Connection)
-            mock_new_conn.bound = True
-            mock_new_conn.closed = False
-            mock_create.return_value = mock_new_conn
-
+        with patch.object(client, "_bind_connection", new_callable=AsyncMock) as mock_bind:
             async with client.connection() as conn:
-                assert conn == mock_conn
+                assert conn is mock_conn
+
+            assert mock_bind.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_connection_discards_idle_expired(self, ldap_settings):
+        ldap_settings.pool_max_idle_seconds = 60
+        client = LDAPClient(ldap_settings)
+        client._server = Mock(spec=Server)
+        client._lock = asyncio.Lock()
+        client._pool = asyncio.Queue()
+
+        stale_conn = Mock(spec=Connection)
+        stale_conn.bound = True
+        stale_conn.closed = False
+        stale_conn._pool_idle_since = time.time() - 120
+        await client._pool.put(stale_conn)
+        client._pool_size = 1
+
+        fresh_conn = Mock(spec=Connection)
+        fresh_conn.bound = True
+        fresh_conn.closed = False
+
+        with patch.object(
+            client, "_create_and_bind_connection", new_callable=AsyncMock, return_value=fresh_conn
+        ), patch.object(client, "_bind_connection", new_callable=AsyncMock):
+            async with client.connection() as conn:
+                assert conn is fresh_conn
+
+    @pytest.mark.asyncio
+    async def test_authenticate_retries_on_connection_error(self, ldap_settings):
+        client = LDAPClient(ldap_settings)
+        user_attrs = {
+            "dn": "cn=testuser,dc=example,dc=com",
+            "uid": "testuser",
+        }
+
+        with patch.object(
+            client,
+            "_authenticate_once",
+            new_callable=AsyncMock,
+            side_effect=[
+                LDAPConnectionError("stale connection"),
+                user_attrs,
+            ],
+        ) as mock_auth:
+            result = await client.authenticate("testuser", "password")
+
+            assert result == user_attrs
+            assert mock_auth.call_count == 2
 
     @pytest.mark.asyncio
     async def test_authenticate_exception_handling(self, ldap_settings):
@@ -618,7 +672,9 @@ class TestLDAPClient:
         mock_conn.bound = False
         mock_conn.rebind = Mock(side_effect=LDAPException("Bind failed"))
 
-        with patch("asyncio.get_event_loop") as mock_loop:
+        with patch("asyncio.get_event_loop") as mock_loop, patch(
+            "asyncio.sleep", new_callable=AsyncMock
+        ):
             mock_loop.return_value.run_in_executor = AsyncMock(side_effect=lambda executor, func, *args: func())
 
             with pytest.raises(LDAPConnectionError, match="Failed to bind LDAP connection"):
@@ -629,12 +685,11 @@ class TestLDAPClient:
         client = LDAPClient(ldap_settings)
         client._server = Mock(spec=Server)
 
-        with patch.object(client, "_create_connection", new_callable=AsyncMock) as mock_create, patch.object(
-            client, "_bind_connection", new_callable=AsyncMock
-        ) as mock_bind:
+        with patch.object(
+            client, "_create_and_bind_connection", new_callable=AsyncMock
+        ) as mock_create:
             mock_create.side_effect = Exception("Connection failed")
 
             await client._populate_pool()
 
             assert mock_create.called
-

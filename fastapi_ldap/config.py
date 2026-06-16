@@ -80,6 +80,14 @@ class LDAPSettings(BaseSettings):
         ge=0.0,
         description="Timeout for acquiring connection from pool (seconds).",
     )
+    pool_max_idle_seconds: float = Field(
+        default=1800.0,
+        ge=0.0,
+        description=(
+            "Discard pooled connections idle longer than this (seconds). "
+            "Set to 0 to disable. Helps avoid stale AD/LDAP idle disconnects."
+        ),
+    )
 
     connect_timeout: float = Field(
         default=10.0,

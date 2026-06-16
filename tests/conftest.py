@@ -18,6 +18,10 @@ def ldap_settings() -> LDAPSettings:
         bind_password="secret",
         use_tls=True,
         cache_enabled=False,
+        pool_timeout=0.05,
+        pool_max_idle_seconds=60,
+        max_retries=1,
+        retry_delay=0.01,
     )
 
 
